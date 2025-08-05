@@ -28,8 +28,6 @@ class MainWindow(QMainWindow, main_gui.Nevasa):
             os.makedirs(self.setting_path)
         if not os.path.exists(self.dataset_path):
             os.makedirs(self.dataset_path)
-        if not os.path.exists(self.license_path):
-            os.makedirs(self.license_path)
         self.icon = QIcon()
         self.icon.addPixmap(QPixmap("resources/icon/Nevasa.ico").scaled(64, 64), QIcon.Mode.Normal, QIcon.State.Off)
         self.setWindowIcon(self.icon)
