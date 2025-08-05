@@ -36,7 +36,6 @@ from datetime import datetime, timedelta
 from PySide6.QtWebChannel import QWebChannel
 from geodata import geodata_view
 from gui import customwidget
-from license import license
 from shapely.wkt import loads, dumps
 from BlurWindow.blurWindow import GlobalBlur
 from map_engine import map_engine
@@ -81,7 +80,6 @@ class Nevasa:
             'when_click_closebutton': 'quit',  # 点击关闭按钮时，执行动作（可通过GUI设置）
             'last_save_path': '',  # 最后一次任务保存路径（可通过GUI设置）
             'proxies': {},  # 已保存的代理（可通过GUI设置）
-            'license_path': '',  # 许可文件名
             'map_opacity': 0.7,  # 3d地图渲染图层透明度
             'min_zoom_3d': 14,  # 3d地图建筑物最小显示层级
             'default_map_visualize': '2d',  # 默认地图渲染形式（可通过GUI设置）
@@ -89,13 +87,12 @@ class Nevasa:
             'proxies_username': {},  # 代理用户名（可通过GUI设置）
             'transparent_window': False,  # 主界面窗口风格（可通过GUI设置）
             'loading_html_timeout_ms': 25000,  # 数据集加载超时时间
-            'license_server_url': 'http://1.12.228.148:42689'  # 许可服务器地址
         }
         self.map, self.test = map_engine.GeeMapHtml(), ts.AuthAndKeyTest()
         self.task_download_times, self.dataset_info = {}, {}
         self.exists_task, self.exists_dataset = pd.DataFrame(), pd.DataFrame()
         self.task_path, self.setting_path, = self.path / "downloadtask", self.path / "setting"
-        self.dataset_path, self.license_path = self.path / "dataset", self.path / "license"
+        self.dataset_path = self.path / "dataset"
         self.log_path, self.numbacache_path = self.path / "log.txt", self.path / "numba_cache"
         self.get_all_settings()
         self.get_all_tasks()
@@ -108,7 +105,6 @@ class Nevasa:
         self.end_listening_js, self.dataset_html_loaded, self.base_map_change_attention = False, False, False
         self.current_loading_dataset, self.current_loading_visualize, self.current_loading_datasource = None, None, None
         self.temp_pdf_file, self.temp_html_file = None, None
-        self.license_check_result, self.license_enddate = None, None
         self.load_html_timeout_timer, self.picked_region_draw_timer = QTimer(), QTimer()
         self.load_html_timeout_timer.timeout.connect(self.loading_html_timeout)
         self.picked_region_draw_timer.timeout.connect(self.listener_for_js)
@@ -146,8 +142,6 @@ class Nevasa:
         self.active_window_signal.connect(self.mainwindow.show_main_gui)
         initialization_ee_thread = threading.Thread(target=self.initialization_ee, daemon=True)
         initialization_ee_thread.start()
-        initialization_license_check_thread = threading.Thread(target=self.license_check, daemon=True)
-        initialization_license_check_thread.start()
         initialization_spatialdata_thread = threading.Thread(target=self.initialization_spatialdata, daemon=True)
         initialization_spatialdata_thread.start()
         initialization_multiprocessmanager_thread = threading.Thread(target=self.initialization_multiprocessmanager, daemon=True)
@@ -253,37 +247,6 @@ class Nevasa:
             print('eeinitialization exception', e)
             self.ee_initialization_signal.emit("fail")
 
-    def license_check(self):
-        try:
-            self.license = license.License(self.settings['license_server_url'])
-            with open(self.license_path / f'{self.settings['license_path']}', 'r') as file:
-                xml_str = file.read()
-            license_info = xmltodict.parse(xml_str)
-            license_chain_a = license_info['root']['license']
-            license_chain_b = keyring.get_password(service_name='Nevasa', username='Nevasa_Master_password')
-            if self.license.check_is_dna(chain_a=license_chain_a, chain_b=license_chain_b):
-                try:
-                    self.license_check_result, date = self.license.check_license(nee_license=license_chain_a)
-                    self.license_enddate = date[:4] + '-' + date[4:6] + '-' + date[6:]
-                except:
-                    print('license check fail')
-                    print(traceback.print_exc())
-                    self.license_check_result, self.license_enddate = False, None
-                if self.license_check_result:
-                    self.license_file_lineedit.setText(f"{self.settings['license_path']}  (有效期至{self.license_enddate})")
-                else:
-                    self.license_file_lineedit.setText(f"{self.settings['license_path']}  (验证失败)")
-                self.license_file_lineedit.setCursorPosition(0)
-            else:
-                print('license DNA check fail')
-                self.license_check_result, self.license_enddate = False, None
-                self.license_file_lineedit.setText(f"{self.settings['license_path']}  (验证失败)")
-                self.license_file_lineedit.setCursorPosition(0)
-            print('license check', "success" if self.license_check_result else "fail", self.license_enddate)
-        except Exception as e:
-            print('license exception', e)
-            return e
-
     def ee_initialization_result(self, message):
         if message == 'fail':
             self.view_toolbutton.setEnabled(False)
@@ -341,15 +304,11 @@ class Nevasa:
         if self.progress_value >= 100:
             self.newtask_timer.deleteLater()
             self.newtaskwidget.setVisible(False)  # 关闭窗口
-            if self.license_check_result:
-                self.exists_task.loc[self.exists_task['taskname'] == f'{taskname}', 'this_start_time'] = time.time()
-                self.download_dataset_button.setEnabled(True)
-                self.task_toolbutton.click()
-                self.all_tasks_radio.click()
-                self.dataset_name_combobox.update_placeholdertext()
-            else:
-                self.download_toolbutton.click()
-                self.task_toolbutton.setEnabled(False)
+            self.exists_task.loc[self.exists_task['taskname'] == f'{taskname}', 'this_start_time'] = time.time()
+            self.download_dataset_button.setEnabled(True)
+            self.task_toolbutton.click()
+            self.all_tasks_radio.click()
+            self.dataset_name_combobox.update_placeholdertext()
 
     def listener_for_js(self):
         if self.end_listening_js:
@@ -1256,58 +1215,46 @@ class Nevasa:
         self.exists_task.loc[self.exists_task['taskname'] == f'{taskname}', 'remaining_time'] = None
         self.exists_task.loc[self.exists_task['taskname'] == f'{taskname}', 'this_start_time'] = None
         self.exists_task.loc[self.exists_task['taskname'] == f'{taskname}', 'speed_calculate_list'] = None
-        if self.license_check_result is None or not self.license_check_result:
-            error = self.license_check()
-        if self.license_check_result is None or not self.license_check_result:
-            self.exists_task.loc[self.exists_task['taskname'] == f'{taskname}', 'is_executing'] = False
-            self.view_toolbutton.click()
-            self.task_toolbutton.setEnabled(False)
-            if error is not None and 'network error' in str(error):
-                self.show_msg_box('请检查你的网络连接')
-            else:
-                self.show_msg_box('没有可用许可，请联系你的管理员')
-            return False
+        while True:
+            if self.subprocess is not None:
+                break
+            time.sleep(0.01)
+        downloadpath = task_parameter.loc[0, 'downloadpath']
+        ee_object = task_parameter.loc[0, 'data_source_lv3']
+        downloadpolygon = task_parameter.loc[0, 'datasetregion']
+        datarangetype = task_parameter.loc[0, 'datarangetype']
+        ee_initialize = (self.settings['service_account'], self.settings['json_file'], self.settings['project_id'])
+        start_date = task_parameter.loc[0, 'start_date']
+        end_date = task_parameter.loc[0, 'end_date']
+        scale = task_parameter.loc[0, 'data_scale']
+        bands = task_parameter.loc[0, 'bands']
+        if isinstance(bands, float) and numpy.isnan(bands):
+            bands = None
         else:
-            while True:
-                if self.subprocess is not None:
-                    break
-                time.sleep(0.01)
-            downloadpath = task_parameter.loc[0, 'downloadpath']
-            ee_object = task_parameter.loc[0, 'data_source_lv3']
-            downloadpolygon = task_parameter.loc[0, 'datasetregion']
-            datarangetype = task_parameter.loc[0, 'datarangetype']
-            ee_initialize = (self.settings['service_account'], self.settings['json_file'], self.settings['project_id'])
-            start_date = task_parameter.loc[0, 'start_date']
-            end_date = task_parameter.loc[0, 'end_date']
-            scale = task_parameter.loc[0, 'data_scale']
-            bands = task_parameter.loc[0, 'bands']
-            if isinstance(bands, float) and numpy.isnan(bands):
-                bands = None
-            else:
-                try:
-                    bands = tuple(map(str, bands.split(',')))
-                except:
-                    bands = (bands,)
-            picked_sn = task_parameter.loc[0, 'picked_sn']
-            picked_sh = task_parameter.loc[0, 'picked_sh']
-            picked_xn = task_parameter.loc[0, 'picked_xn']
-            is_export_shp = task_parameter.loc[0, 'is_export_shp']
             try:
-                adcode_picked_region_draw = tuple(map(int, task_parameter.loc[0, 'adcode_picked_region_draw'].split(',')))
+                bands = tuple(map(str, bands.split(',')))
             except:
-                adcode_picked_region_draw = (task_parameter.loc[0, 'adcode_picked_region_draw'],)
-            regionname = self.get_regionname(datarangetype, picked_sn, picked_sh, picked_xn, adcode_picked_region_draw)
-            self.subprocess.process_done_dict[taskname] = {}
-            self.subprocess.process_done_dict[taskname]['CalculateTiles'] = task_parameter.loc[0, 'is_CalculateTiles_done']
-            self.subprocess.process_done_dict[taskname]['TileDownload'] = task_parameter.loc[0, 'is_TileDownload_done']
-            self.subprocess.process_done_dict[taskname]['TileStitch'] = task_parameter.loc[0, 'is_TileStitch_done']
-            self.task_download_times[taskname] = 0
-            self.execute_task_timer[taskname] = QTimer()
-            self.execute_task_timer[taskname].timeout.connect(
-                lambda: self.task_timer(taskfile, taskname, ee_object, downloadpath, ee_initialize, start_date,
-                                        end_date, bands, scale, downloadpolygon, regionname, is_export_shp))
-            self.execute_task_timer[taskname].start(500)
-            return True
+                bands = (bands,)
+        picked_sn = task_parameter.loc[0, 'picked_sn']
+        picked_sh = task_parameter.loc[0, 'picked_sh']
+        picked_xn = task_parameter.loc[0, 'picked_xn']
+        is_export_shp = task_parameter.loc[0, 'is_export_shp']
+        try:
+            adcode_picked_region_draw = tuple(map(int, task_parameter.loc[0, 'adcode_picked_region_draw'].split(',')))
+        except:
+            adcode_picked_region_draw = (task_parameter.loc[0, 'adcode_picked_region_draw'],)
+        regionname = self.get_regionname(datarangetype, picked_sn, picked_sh, picked_xn, adcode_picked_region_draw)
+        self.subprocess.process_done_dict[taskname] = {}
+        self.subprocess.process_done_dict[taskname]['CalculateTiles'] = task_parameter.loc[0, 'is_CalculateTiles_done']
+        self.subprocess.process_done_dict[taskname]['TileDownload'] = task_parameter.loc[0, 'is_TileDownload_done']
+        self.subprocess.process_done_dict[taskname]['TileStitch'] = task_parameter.loc[0, 'is_TileStitch_done']
+        self.task_download_times[taskname] = 0
+        self.execute_task_timer[taskname] = QTimer()
+        self.execute_task_timer[taskname].timeout.connect(
+            lambda: self.task_timer(taskfile, taskname, ee_object, downloadpath, ee_initialize, start_date,
+                                    end_date, bands, scale, downloadpolygon, regionname, is_export_shp))
+        self.execute_task_timer[taskname].start(500)
+        return True
 
     def task_timer(self, taskfile, taskname, ee_object, downloadpath, ee_initialize, start_date, end_date, bands, scale, downloadpolygon, regionname,
                    is_export_shp):
@@ -2906,20 +2853,15 @@ class Nevasa:
         self.google_authenticate_label_layout.addWidget(self.google_authenticate_label)
         self.google_authenticate_label_layout.addWidget(self.google_authenticate_guidance_label)
         self.google_authenticate_label_layout.addStretch(1)
-        self.license_label = QLabel(text='许可设置：', parent=self.settingwidget)
-        self.set_label_stylesheet(self.license_label)
         self.application_setting_widget()
         self.proxies_setting_widget()
         self.google_authenticate_widget()
-        self.license_widget()
         self.settingwidget_layout.addWidget(self.application_label)
         self.settingwidget_layout.addWidget(self.applicationsettingwidget)
         self.settingwidget_layout.addWidget(self.proxies_label)
         self.settingwidget_layout.addWidget(self.proxiessettingwidget)
         self.settingwidget_layout.addWidget(self.google_authenticate_label_widget)
         self.settingwidget_layout.addWidget(self.googleauthenticatewidget)
-        self.settingwidget_layout.addWidget(self.license_label)
-        self.settingwidget_layout.addWidget(self.licensewidget)
         self.settingwidget_layout.addStretch(1)
         for label in self.settingwidget.findChildren(QLabel):
             label.setMinimumHeight(20)
@@ -3557,86 +3499,6 @@ class Nevasa:
     def on_google_authenticate_guidance_click(self, event):
         self.view_toolbutton.click()
 
-    def license_widget(self):
-        self.licensewidget = QWidget(parent=self.settingwidget)
-        self.license_widget_layout = QHBoxLayout()
-        self.license_widget_layout.setSpacing(60)
-        self.license_widget_layout.setContentsMargins(30, 0, 30, 0)
-        self.licensewidget.setLayout(self.license_widget_layout)
-        # 左边新增许可widget
-        self.licensewidget_left_layout = QFormLayout()
-        self.licensewidget_left_layout.setSpacing(self.settingwidgetspacing)
-        self.licensewidget_left_layout.setContentsMargins(0, 0, 0, 0)
-        self.license_file_label = QLabel(text='许可文件', parent=self.licensewidget)
-        self.set_label_stylesheet(self.license_file_label)
-        self.license_file_lineedit = QLineEdit(parent=self.licensewidget)
-        self.license_file_lineedit.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        self.set_lineedit_stylesheet(self.license_file_lineedit)
-        self.license_file_lineedit.setReadOnly(True)
-        self.licensewidget_left_layout.addRow(self.license_file_label, self.license_file_lineedit)
-        # 右边导入许可部分，使用表单布局
-        self.licensewidget_right_layout = QFormLayout()
-        self.licensewidget_right_layout.setSpacing(self.settingwidgetspacing)
-        self.licensewidget_right_layout.setContentsMargins(0, 0, 0, 0)
-        self.generate_host_info_button = QPushButton(text='生成本机信息', parent=self.licensewidget, ObjectName='generate_host_info_button')
-        self.set_pushbutton_stylesheet(self.generate_host_info_button)
-        self.update_license_button = QPushButton(text='更新许可文件', parent=self.licensewidget, ObjectName='update_license_button')
-        self.set_pushbutton_stylesheet(self.update_license_button)
-        self.licensewidget_right_layout.addRow(self.generate_host_info_button, self.update_license_button)
-        self.license_widget_layout.addLayout(self.licensewidget_left_layout, stretch=1)
-        self.license_widget_layout.addLayout(self.licensewidget_right_layout, stretch=1)
-        return self.licensewidget
-
-    @Slot()
-    def on_generate_host_info_button_clicked(self):
-        path = self.choosepath()
-        if path is not None:
-            filename = self.license.write_computer_info(path)
-            self.show_msg_box(f'已生成本机信息文件{filename}')
-            try:
-                if self.os_system == 'Windows':
-                    os.startfile(path)
-                elif self.os_system == 'Darwin':  # macOS
-                    subprocess.call(['open', path])
-                elif self.os_system == 'Linux':  # Linux
-                    subprocess.call(['xdg-open', path])
-            except:
-                pass
-
-    @Slot()
-    def on_update_license_button_clicked(self):
-        license_file = self.choosepath(is_license=True)
-        if license_file != '':
-            try:
-                with open(license_file, 'r') as file:
-                    xml_str = file.read()
-                license_info = xmltodict.parse(xml_str)
-                nee_license = license_info['root']['license']
-                license_check, license_enddate = self.license.check_license(nee_license=nee_license)
-                license_enddate = license_enddate[:4] + '-' + license_enddate[4:6] + '-' + license_enddate[6:8]
-            except:
-                license_check, license_enddate = False, None
-            if license_check:
-                try:
-                    shutil.copy(license_file, self.license_path)
-                except Exception as e:
-                    print(e)
-                license_chain_a, license_chain_b = self.license.regenerate_dna_chain(chain_a=nee_license)
-                try:
-                    keyring.delete_password(service_name='Nevasa', username='Nevasa_Master_password')
-                except:
-                    pass
-                keyring.set_password(service_name='Nevasa', username='Nevasa_Master_password', password=license_chain_b)
-                self.settings['license_path'] = str(os.path.basename(license_file))
-                self.write_settings('license_path', str(os.path.basename(license_file)))
-                self.license_file_lineedit.setText(f"{self.settings['license_path']}  (有效期至{license_enddate})")
-                self.replace_widget(self.taskwidget, self.task_widget)
-                self.stackwidget.setCurrentIndex(2)
-                self.task_toolbutton.setEnabled(True)
-                self.show_msg_box(f'已成功更新许可<br>有效期至{license_enddate}')
-            else:
-                self.show_msg_box(f'不正确的许可文件')
-
     def set_proxy(self, set_proxy: bool, proxy_id=None):
         if set_proxy:
             try:
@@ -3685,12 +3547,10 @@ class Nevasa:
                 get_setting(key='min_zoom_3d', function=int)
                 get_setting(key='default_map_visualize', function=int)
                 get_setting(key='max_download_try', function=int)
-                get_setting(key='license_path')
                 get_setting(key='select_task')
                 get_setting(key='last_save_path')
                 get_setting(key='when_click_closebutton')
                 get_setting(key='when_close_application')
-                get_setting(key='license_server_url')
                 get_setting(key='max_proxy_server', function=lambda value: int(value) if int(value) < 5 else 4)
                 try:
                     for proxy in settings['root']['proxies']:
@@ -3717,24 +3577,19 @@ class Nevasa:
         except Exception as e:
             pass
 
-    def choosepath(self, is_json_key=False, is_license=False, is_customregion_file=False):
+    def choosepath(self, is_json_key=False, is_true=False, is_customregion_file=False):
         if is_json_key:
             jsonpath = QFileDialog.getOpenFileName(self.settingwidget, caption="请选择json-key", dir='',
                                                    filter="Json文件 (*.json);;所有文件 (*)", options=QFileDialog.Option.ReadOnly)
             if jsonpath:
                 self.json_key_lineedit.setText(jsonpath[0])
                 self.json_key_lineedit.setCursorPosition(0)
-        elif not is_json_key and not is_license and not is_customregion_file:
+        elif not is_json_key and not is_true and not is_customregion_file:
             savepath = QFileDialog.getExistingDirectory(self.settingwidget, caption="请选择文件夹", dir=self.settings['last_save_path'])
             if savepath:
                 self.savepath_lineEdit.setText(savepath)
                 self.savepath_lineEdit.setCursorPosition(0)
                 return savepath
-        elif is_license:
-            licensepath = QFileDialog.getOpenFileName(self.settingwidget, caption="请选择许可文件", dir='',
-                                                      filter="lic文件 (*.lic);;所有文件 (*)", options=QFileDialog.Option.ReadOnly)
-            if licensepath:
-                return licensepath[0]
         elif is_customregion_file:
             filepath = QFileDialog.getOpenFileName(self.settingwidget, caption="请选择数据源文件", dir='',
                                                    filter="所有支持的文件类型 (*.shp;*.json;*.geojson;*.gpkg;*.kml;*.gml);;Shapefile文件 (*.shp);;"
